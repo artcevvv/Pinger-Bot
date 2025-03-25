@@ -21,6 +21,12 @@ type PingTask struct {
 	lastStatusCode int
 }
 
+type checkedURL struct {
+	url    string
+	status string
+	code   int
+}
+
 var (
 	pingTasks = make(map[int64]map[string]*PingTask)
 	mu        sync.Mutex
@@ -54,9 +60,9 @@ func main() {
 	bh.Handle(func(bot *telego.Bot, update telego.Update) {
 		chatID := update.Message.Chat.ID
 		text := update.Message.Text
-		args := strings.Fields(text)[1:]
+		urls := strings.Fields(text)[1:]
 
-		if len(args) == 0 {
+		if len(urls) == 0 {
 			_, _ = bot.SendMessage(tu.Message(tu.ID(chatID), "Пожалуйста, укажите URL-ы для проверки."))
 			return
 		}
@@ -67,7 +73,7 @@ func main() {
 		}
 		mu.Unlock()
 
-		for _, url := range args {
+		for _, url := range urls {
 			if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
 				url = "https://" + url
 			}
@@ -91,6 +97,21 @@ func main() {
 
 			go startPinging(bot, chatID, url, task)
 		}
+
+		// Send immediate status report
+		mu.Lock()
+		var allResults []PingResult
+		if tasks, exists := pingTasks[chatID]; exists {
+			for taskURL := range tasks {
+				result := pingURL(taskURL)
+				allResults = append(allResults, result)
+			}
+		}
+		mu.Unlock()
+
+		// Format and send initial results
+		formattedResults := formatPingResults(allResults)
+		_, _ = bot.SendMessage(tu.Message(tu.ID(chatID), formattedResults))
 
 		_, _ = bot.SendMessage(tu.Message(tu.ID(chatID), "Начат пинг указанных URL-ов. \n\nОтправьте /cancel <URL> для остановки конкретного пинга.\n\nДля проверки процессов- используйте /running"))
 	}, th.CommandEqual("ping"))
@@ -163,19 +184,32 @@ func startPinging(bot *telego.Bot, chatID int64, url string, task *PingTask) {
 		case <-task.stopCh:
 			return
 		default:
-			status, code := pingURL(url)
-			if code != http.StatusOK && code != task.lastStatusCode {
-				_, _ = bot.SendMessage(tu.Message(tu.ID(chatID), fmt.Sprintf("⚠️ Alert! %s returned status code %d", url, code)))
+			result := pingURL(url)
+			
+			if result.StatusCode != http.StatusOK && result.StatusCode != task.lastStatusCode {
+				_, _ = bot.SendMessage(tu.Message(tu.ID(chatID), fmt.Sprintf("⚠️ Alert! %s вернул статус %d", url, result.StatusCode)))
 			}
-			task.lastStatusCode = code
+			task.lastStatusCode = result.StatusCode
 
-			// Daily report
-			if time.Since(task.lastReport).Hours() >= 24 {
-				_, _ = bot.SendMessage(tu.Message(tu.ID(chatID), fmt.Sprintf("Daily report for %s:\n%s", url, status)))
+			if time.Since(task.lastReport).Minutes() >= 30 {
+				// Collect all results for this chat
+				mu.Lock()
+				var allResults []PingResult
+				if tasks, exists := pingTasks[chatID]; exists {
+					for taskURL := range tasks {
+						result := pingURL(taskURL)
+						allResults = append(allResults, result)
+					}
+				}
+				mu.Unlock()
+
+				// Format and send all results in one message
+				formattedResults := formatPingResults(allResults)
+				_, _ = bot.SendMessage(tu.Message(tu.ID(chatID), formattedResults))
 				task.lastReport = time.Now()
 			}
 
-			time.Sleep(1 * time.Hour)
+			time.Sleep(30 * time.Minute)
 		}
 	}
 }
