@@ -15,8 +15,12 @@ type PingResult struct {
 }
 
 func pingURL(url string) PingResult {
+	// log.Printf("Pinging URL: %s", url)
+	// startTime := time.Now()
+
 	resp, err := http.Get(url)
 	if err != nil {
+		// log.Printf("Error pinging %s: %v", url, err)
 		return PingResult{
 			URL:        url,
 			StatusCode: http.StatusInternalServerError,
@@ -25,6 +29,9 @@ func pingURL(url string) PingResult {
 		}
 	}
 	defer resp.Body.Close()
+
+	// duration := time.Since(startTime)
+	// log.Printf("Ping completed for %s: Status=%d, Duration=%v", url, resp.StatusCode, duration)
 
 	return PingResult{
 		URL:        url,
@@ -35,13 +42,13 @@ func pingURL(url string) PingResult {
 }
 
 func formatPingResults(results []PingResult) string {
-	// Group results by status code
+	// log.Printf("Formatting results for %d URLs", len(results))
+
 	statusGroups := make(map[int][]PingResult)
 	for _, result := range results {
 		statusGroups[result.StatusCode] = append(statusGroups[result.StatusCode], result)
 	}
 
-	// Get all status codes and sort them (non-200 first)
 	var statusCodes []int
 	for code := range statusGroups {
 		statusCodes = append(statusCodes, code)
@@ -61,13 +68,13 @@ func formatPingResults(results []PingResult) string {
 
 	for _, code := range statusCodes {
 		groupResults := statusGroups[code]
-		
-		// Add emoji based on status code
+		// log.Printf("Grouping %d URLs with status code %d", len(groupResults), code)
+
 		emoji := "✅"
 		if code != 200 {
 			emoji = "⚠️"
 		}
-		
+
 		output += fmt.Sprintf("%s Статус %d:\n", emoji, code)
 		for _, result := range groupResults {
 			output += fmt.Sprintf("  • %s\n", result.URL)

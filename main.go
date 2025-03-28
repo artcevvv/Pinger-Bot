@@ -33,9 +33,10 @@ var (
 )
 
 func main() {
+	log.Println("=== Starting Pinger Bot ===")
 	err := godotenv.Load(".env")
 	if err != nil {
-		fmt.Printf("Error loading dotenv: %s\n", err)
+		log.Printf("Error loading .env: %s", err)
 	}
 
 	botToken := os.Getenv("TELEGRAM_TOKEN")
@@ -44,11 +45,13 @@ func main() {
 		log.Fatalf("Failed to create bot: %s", err)
 	}
 
+	log.Println("Bot created successfully, initializing...")
 	updates, _ := bot.UpdatesViaLongPolling(nil)
 	bh, _ := th.NewBotHandler(bot, updates)
 
 	defer bh.Stop()
 	defer bot.StopLongPolling()
+	defer log.Println("=== Bot stopped ===")
 
 	bh.Handle(func(bot *telego.Bot, update telego.Update) {
 		chatID := update.Message.Chat.ID
@@ -70,6 +73,7 @@ func main() {
 		mu.Lock()
 		if _, exists := pingTasks[chatID]; !exists {
 			pingTasks[chatID] = make(map[string]*PingTask)
+			go startReportLoop(bot, chatID)
 		}
 		mu.Unlock()
 
@@ -179,37 +183,46 @@ func main() {
 }
 
 func startPinging(bot *telego.Bot, chatID int64, url string, task *PingTask) {
+	// log.Printf("Starting ping task for URL: %s (ChatID: %d)", url, chatID)
 	for {
 		select {
 		case <-task.stopCh:
+			// log.Printf("Stopping ping task for URL: %s (ChatID: %d)", url, chatID)
 			return
 		default:
 			result := pingURL(url)
-			
+			// log.Printf("Ping result for %s: Status=%d", url, result.StatusCode)
+
 			if result.StatusCode != http.StatusOK && result.StatusCode != task.lastStatusCode {
+				// log.Printf("Status change detected for %s: %d -> %d", url, task.lastStatusCode, result.StatusCode)
 				_, _ = bot.SendMessage(tu.Message(tu.ID(chatID), fmt.Sprintf("⚠️ Alert! %s вернул статус %d", url, result.StatusCode)))
 			}
 			task.lastStatusCode = result.StatusCode
 
-			if time.Since(task.lastReport).Minutes() >= 30 {
-				// Collect all results for this chat
-				mu.Lock()
-				var allResults []PingResult
-				if tasks, exists := pingTasks[chatID]; exists {
-					for taskURL := range tasks {
-						result := pingURL(taskURL)
-						allResults = append(allResults, result)
-					}
-				}
-				mu.Unlock()
-
-				// Format and send all results in one message
-				formattedResults := formatPingResults(allResults)
-				_, _ = bot.SendMessage(tu.Message(tu.ID(chatID), formattedResults))
-				task.lastReport = time.Now()
-			}
-
 			time.Sleep(30 * time.Minute)
 		}
+	}
+}
+
+func startReportLoop(bot *telego.Bot, chatID int64) {
+	// log.Printf("Starting report loop for ChatID: %d", chatID)
+	for {
+		mu.Lock()
+		if tasks, exists := pingTasks[chatID]; exists && len(tasks) > 0 {
+			var allResults []PingResult
+			for taskURL := range tasks {
+				result := pingURL(taskURL)
+				allResults = append(allResults, result)
+				// log.Printf("Added result for %s: Status=%d", taskURL, result.StatusCode)
+			}
+			mu.Unlock()
+
+			formattedResults := formatPingResults(allResults)
+			_, _ = bot.SendMessage(tu.Message(tu.ID(chatID), formattedResults))
+		} else {
+			mu.Unlock()
+		}
+
+		time.Sleep(30 * time.Minute)
 	}
 }
